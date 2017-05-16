@@ -1,5 +1,3 @@
-/* Chapter 9. */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,8 +7,8 @@
 
 #include "mpc.h"
 
-/* Forward declarations. */
 
+/* Forward declarations. */
 struct lval;
 struct lenv;
 typedef struct lval lval;
@@ -40,11 +38,13 @@ struct lenv {
 };
 
 void lval_print(lval*);
+char* lval_print_message(lval*);
 lval* lval_eval_sexpr(lenv*, lval*);
 void lval_del(lval*);
 lval* lval_copy(lval*);
 lval* lval_err(char *);
 
+#define UNUSED(x) (void)(x)
 #define LASSERT(args, cond, err) \
   if (!(cond)) { lval_del(args); return lval_err(err); }
 
@@ -72,11 +72,16 @@ lval* lenv_get(lenv* e, lval* k) {
   for (int i = 0; i < e->count; i++) {
     if (strcmp(e->syms[i], k->sym) == 0) {
       /* Found the symbol, return it. */
+      char *msg = lval_print_message(e->vals[i]);
+      fprintf(stderr, "Found pair: %s -> %s\n", k->sym, msg);
+      free(msg);
       return lval_copy(e->vals[i]);
     }
   }
 
-  return lval_err("unbound symbol!");
+  char msg[40];
+  snprintf(msg, 40, "unbound symbol: %s", k->sym);
+  return lval_err(msg);
 }
 
 void lenv_put(lenv* e, lval* k, lval* v) {
@@ -108,7 +113,9 @@ lval* lval_eval(lenv* e, lval* v) {
     lval_del(v);
     return x;
   }
-  if (v->type == LVAL_SEXPR) { return lval_eval_sexpr(e, v); }
+  if (v->type == LVAL_SEXPR) {
+    return lval_eval_sexpr(e, v);
+  }
   return v;
 }
 
@@ -215,29 +222,58 @@ lval* lval_read(mpc_ast_t* t) {
   return x;
 }
 
-void lval_expr_print(lval* v, char open, char close) {
-  putchar(open);
+char* lval_expr_print(lval* v, char open, char close) {
+  char *msg = malloc(1024);
+  char *tmp = malloc(1024);
+
+  /* Fill memory with 0s in case of an empty lval. */
+  memset(tmp, 0, 1024);
+
+  int offset = 0;
   for (int i = 0; i < v->count; i++) {
     /* Print value contained within. */
-    lval_print(v->cell[i]);
+    char* current = lval_print_message(v->cell[i]);
 
     /* Don't print trailing space if last element. */
     if (i != (v->count-1)) {
-      putchar(' ');
+      /* Is there a better way to add a space at the end of the string? */
+      int len = strlen(current);
+      current[len + 1] = '\0';
+      current[len] = ' ';
     }
+
+    /* Keep building our string. */
+    memcpy(tmp + offset, current, strlen(current) + 1);
+    offset = strlen(tmp);
+    free(current);
   }
-  putchar(close);
+  snprintf(msg, 1024, "%c%s%c", open, tmp, close);
+  free(tmp);
+  return msg;
+}
+
+char* lval_print_message(lval* v) {
+  fprintf(stderr, "Printing something\n");
+  char *msg = malloc(1024);
+  switch(v->type) {
+  case LVAL_NUM: snprintf(msg, 1024, "%li", v->num); break;
+  case LVAL_FUN: snprintf(msg, 1024, "<function>"); break;
+  case LVAL_ERR: snprintf(msg, 1024, "Error: %s", v->err); break;
+  case LVAL_SYM: snprintf(msg, 1024, "%s", v->sym); break;
+  case LVAL_SEXPR:
+    free(msg);
+    return lval_expr_print(v, '(', ')');
+  case LVAL_QEXPR:
+    free(msg);
+    return lval_expr_print(v, '{', '}');
+  }
+  return msg;
 }
 
 void lval_print(lval* v) {
-  switch(v->type) {
-  case LVAL_NUM: printf("%li", v->num); break;
-  case LVAL_FUN: printf("<function>"); break;
-  case LVAL_ERR: printf("Error: %s", v->err); break;
-  case LVAL_SYM: printf("%s", v->sym); break;
-  case LVAL_SEXPR: lval_expr_print(v, '(', ')'); break;
-  case LVAL_QEXPR: lval_expr_print(v, '{', '}'); break;
-  }
+  char *msg = lval_print_message(v);
+  printf("%s", msg);
+  free(msg);
 }
 
 void lval_println(lval* v) { lval_print(v); putchar('\n'); }
@@ -304,7 +340,35 @@ lval* lval_take(lval* v, int i) {
   return x;
 }
 
+lval* builtin_def(lenv* e, lval* a) {
+  LASSERT(a, a->cell[0]->type == LVAL_QEXPR,
+          "Function 'def' passed incorrect type.");
+
+  /* First argument is symbol list. */
+  lval* syms = a->cell[0];
+
+  /* Ensure all elements of first list are symbols. */
+  for (int i = 0; i < syms->count; i++) {
+    LASSERT(a, syms->cell[i]->type == LVAL_SYM,
+            "Function 'def' cannot define non-symbol");
+  }
+
+  /* Check correct number of symbols and values. */
+  LASSERT(a, syms->count == a->count-1,
+          "Function 'def' cannot define incorrect"
+          "number of values to symbols.");
+
+  /* Assign copies of values to symbols. */
+  for (int i = 0; i < syms->count; i++) {
+    lenv_put(e, syms->cell[i], a->cell[i+1]);
+  }
+
+  lval_del(a);
+  return lval_sexpr();
+}
+
 lval* builtin_list(lenv* e, lval* a) {
+  UNUSED(e);
   a->type = LVAL_QEXPR;
   return a;
 }
@@ -320,6 +384,7 @@ lval* lval_join(lval* x, lval* y) {
 }
 
 lval* builtin_join(lenv* e, lval* a) {
+  UNUSED(e);
   for (int i = 0; i < a->count; i++) {
     LASSERT(a, a->cell[i]->type == LVAL_QEXPR,
             "Function 'join' passed incorrect type.");
@@ -347,6 +412,7 @@ lval* builtin_eval(lenv* e, lval* a) {
 }
 
 lval* builtin_head(lenv* e, lval* a) {
+  UNUSED(e);
   LASSERT(a, a->count == 1,
           "Function 'head' passed too many arguments!");
   LASSERT(a, a->cell[0]->type == LVAL_QEXPR,
@@ -360,6 +426,7 @@ lval* builtin_head(lenv* e, lval* a) {
 }
 
 lval* builtin_tail(lenv* e, lval* a) {
+  UNUSED(e);
   LASSERT(a, a->count == 1,
           "Function 'tail' passed too many arguments!");
   LASSERT(a, a->cell[0]->type == LVAL_QEXPR,
@@ -373,6 +440,7 @@ lval* builtin_tail(lenv* e, lval* a) {
 }
 
 lval* builtin_op(lenv* e, lval* a, char* op) {
+  UNUSED(e);
   /* Ensure all arguments are numbers. */
   for (int i = 0; i < a->count; i++) {
     if (a->cell[i]->type != LVAL_NUM) {
@@ -448,6 +516,9 @@ void lenv_add_builtins(lenv* e) {
   lenv_add_builtin(e, "-", builtin_sub);
   lenv_add_builtin(e, "*", builtin_mul);
   lenv_add_builtin(e, "/", builtin_div);
+
+  /* Variable Functions. */
+  lenv_add_builtin(e, "def", builtin_def);
 }
 
 lval* lval_eval_sexpr(lenv* e, lval* v) {
@@ -470,7 +541,7 @@ lval* lval_eval_sexpr(lenv* e, lval* v) {
   /* Ensure first element is Symbol. */
   lval* f = lval_pop(v, 0);
   if (f->type != LVAL_FUN) {
-    lval_del(f); lval_del(v);
+    lval_del(v); lval_del(f);
     return lval_err("first element is not a function");
   }
 
@@ -481,8 +552,8 @@ lval* lval_eval_sexpr(lenv* e, lval* v) {
 }
 
 int main(int argc, char **argv) {
-  /* mpc_parser_t *Integer = mpc_new("integer"); */
-  /* mpc_parser_t *Decimal = mpc_new("decimal"); */
+  UNUSED(argc); UNUSED(argv);
+
   mpc_parser_t *Number = mpc_new("number");
   mpc_parser_t *Symbol = mpc_new("symbol");
   mpc_parser_t *Sexpr = mpc_new("sexpr");
