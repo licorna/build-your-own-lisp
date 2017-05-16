@@ -42,12 +42,48 @@ char* lval_print_message(lval*);
 lval* lval_eval_sexpr(lenv*, lval*);
 void lval_del(lval*);
 lval* lval_copy(lval*);
-lval* lval_err(char *);
 
 #define UNUSED(x) (void)(x)
-#define LASSERT(args, cond, err) \
-  if (!(cond)) { lval_del(args); return lval_err(err); }
 
+#define LASSERT(args, cond, fmt, ...)               \
+  if (!(cond)) {                                    \
+    lval* err = lval_err(fmt, ##__VA_ARGS__);       \
+    lval_del(args);                                 \
+    return err;                                     \
+}
+
+char* ltype_name(int t) {
+  switch(t) {
+  case LVAL_FUN: return "Function";
+  case LVAL_NUM: return "Number";
+  case LVAL_ERR: return "Error";
+  case LVAL_SYM: return "Symbol";
+  case LVAL_SEXPR: return "S-Expression";
+  case LVAL_QEXPR: return "Q-Expression";
+  }
+  return "Unknown";
+}
+
+lval* lval_err(char* fmt, ...) {
+  lval* v = malloc(sizeof(lval));
+  v->type = LVAL_ERR;
+
+  /* Create va list and initialize it. */
+  va_list va;
+  va_start(va, fmt);
+
+  /* Allocate some space. */
+  v->err = malloc(512);
+
+  /* Print error string with maximum of 511 chars. */
+  vsnprintf(v->err, 511, fmt, va);
+  v->err = realloc(v->err, strlen(v->err) + 1);
+
+  /* Cleanup va list. */
+  va_end(va);
+
+  return v;
+}
 
 lenv* lenv_new(void) {
   lenv* e = malloc(sizeof(lenv));
@@ -79,9 +115,7 @@ lval* lenv_get(lenv* e, lval* k) {
     }
   }
 
-  char msg[40];
-  snprintf(msg, 40, "unbound symbol: %s", k->sym);
-  return lval_err(msg);
+  return lval_err("Unbound symbol '%s'", k->sym);
 }
 
 void lenv_put(lenv* e, lval* k, lval* v) {
@@ -130,14 +164,6 @@ lval* lval_num(long x) {
   lval* v = malloc(sizeof(lval));
   v->type = LVAL_NUM;
   v->num = x;
-  return v;
-}
-
-lval* lval_err(char *m) {
-  lval* v = malloc(sizeof(lval));
-  v->type = LVAL_ERR;
-  v->err = malloc(strlen(m) + 1);
-  strcpy(v->err, m);
   return v;
 }
 
@@ -248,12 +274,12 @@ char* lval_expr_print(lval* v, char open, char close) {
     free(current);
   }
   snprintf(msg, 1024, "%c%s%c", open, tmp, close);
+  msg = realloc(msg, strlen(msg) + 1);
   free(tmp);
   return msg;
 }
 
 char* lval_print_message(lval* v) {
-  fprintf(stderr, "Printing something\n");
   char *msg = malloc(1024);
   switch(v->type) {
   case LVAL_NUM: snprintf(msg, 1024, "%li", v->num); break;
@@ -267,6 +293,8 @@ char* lval_print_message(lval* v) {
     free(msg);
     return lval_expr_print(v, '{', '}');
   }
+
+  msg = realloc(msg, strlen(msg) + 1);
   return msg;
 }
 
@@ -342,7 +370,8 @@ lval* lval_take(lval* v, int i) {
 
 lval* builtin_def(lenv* e, lval* a) {
   LASSERT(a, a->cell[0]->type == LVAL_QEXPR,
-          "Function 'def' passed incorrect type.");
+          "Function 'def' passed incorrect type. Got '%s'; Expected '%s'",
+          ltype_name(a->cell[0]->type), ltype_name(LVAL_QEXPR));
 
   /* First argument is symbol list. */
   lval* syms = a->cell[0];
